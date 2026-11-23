@@ -76,8 +76,10 @@ class ImageFolder(datasets.ImageFolder):
 
                 self.caps = []
                 for i in range(len(self.image_filenames)):
-                    id = "/".join(self.image_filenames[i].split('/')[-2:])
-                    self.caps.append(cap_dic[id])
+                    path_normalized = self.image_filenames[i].replace('\\', '/')
+                    id_clean = "/".join(path_normalized.split('/')[-2:])
+
+                    self.caps.append(cap_dic[id_clean])
 
                 self.cap_embs = []
                 num_text = len(self.caps)

@@ -217,3 +217,15 @@ captions/inat21_caps.txt
 data/inat21-F-train.txt
 logs/
 tmp/
+
+
+
+# Chặn thư mục dataset CUB và file nén
+data/CUB_200_2011/
+data/CUB_200_2011.zip
+*.zip
+
+# Chặn thêm file trọng số mô hình và thư mục cấu hình VS Code
+*.pth
+*.ckpt
+.vscode/

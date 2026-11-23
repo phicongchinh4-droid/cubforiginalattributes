@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Thêm PYTHONPATH để không bị lỗi module
+export PYTHONPATH="deit;deit/dataset;$PYTHONPATH"
+
+# Lệnh chạy huấn luyện (dùng dấu \ để xuống dòng cho dễ nhìn)
+python deit/main_suppix_partial_cap.py \
+  --model cast_small \
+  --batch-size 32 \
+  --epochs 100 \
+  --num-superpixels 196 \
+  --num_workers 4 \
+  --globalkl \
+  --gk_weight 0.5 \
+  --data-set BIRD-HIER-SUPERPIXEL \
+  --data-path ./data/CUB_200_2011/images_split \
+  --output_dir ./output/bird_text_hcast \
+  --texts captions/cub_caps.txt \
+  --sim_loss_weight 1 \
+  --sp_proportion 0.1 \
+  --fm_proportion 0.5 \
+  --seed 0 \
+  --finetune cast_small_best_checkpoint.pth

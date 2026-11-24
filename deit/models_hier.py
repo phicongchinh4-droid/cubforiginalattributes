@@ -21,7 +21,8 @@ __all__ = [
 
 
 class HierVisionTransformer(VisionTransformer):
-    def __init__(self, nb_classes, texts, *args, **kwargs):
+    def __init__(self, nb_classes, texts=None, num_attributes=0, *args, **kwargs):
+        self.num_attributes = kwargs.pop('num_attributes', num_attributes)
         super().__init__(*args, **kwargs)
         #self.pos_embed = nn.Parameter(torch.randn(1, self.embed_len, self.embed_dim) * .02)
         
@@ -45,7 +46,6 @@ class HierVisionTransformer(VisionTransformer):
         self.feats_layer.apply(self._init_weights)
 
         # Attribute prediction head (312 continuous attributes for CUB)
-        self.num_attributes = kwargs.pop('num_attributes', 0)
         if self.num_attributes > 0:
             self.attr_head = nn.Linear(self.embed_dim, self.num_attributes)
             self.attr_head.apply(self._init_weights)

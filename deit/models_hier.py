@@ -44,6 +44,14 @@ class HierVisionTransformer(VisionTransformer):
         self.feats_layer = nn.Linear(self.embed_dim*196, 512) 
         self.feats_layer.apply(self._init_weights)
 
+        # Attribute prediction head (312 continuous attributes for CUB)
+        self.num_attributes = kwargs.pop('num_attributes', 0)
+        if self.num_attributes > 0:
+            self.attr_head = nn.Linear(self.embed_dim, self.num_attributes)
+            self.attr_head.apply(self._init_weights)
+        else:
+            self.attr_head = None
+
     def forward_features(self, x):
         # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
         B = x.shape[0]
@@ -75,14 +83,18 @@ class HierVisionTransformer(VisionTransformer):
     def forward(self, x):
         intermediates = self.forward_features(x)
         if self.len_classes == 3:
-            out = self.norm(intermediates[4][:, 0])
-            out = self.head(out)
+            norm_cls = self.norm(intermediates[4][:, 0])
+            out = self.head(norm_cls)
             family_out = self.family_head(self.norm(intermediates[3][:, 0]))
             manu_out = self.manufacturer_head(self.norm(intermediates[2][:, 0]))
 
             feats = intermediates[4][:, 1:]
 
             feats = self.feats_layer(feats.view(feats.size(0), -1))
+
+            if self.attr_head is not None:
+                attr_out = self.attr_head(norm_cls)
+                return out, family_out, manu_out, feats, attr_out
 
             return out, family_out, manu_out, feats
 

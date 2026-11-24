@@ -69,7 +69,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         with torch.cuda.amp.autocast():
             out = model(samples)
             sim_loss = torch.tensor(0.0)  
-            outputs, sub_out, basic_out, feats  = out
+            outputs, sub_out, basic_out, feats = out[:4]
+            attr_out = out[4] if len(out) > 4 else None
 
             feats = feats / feats.norm(dim=-1, keepdim=True)
             caps_embed = caps_embed / caps_embed.norm(dim=-1, keepdim=True) 
@@ -100,8 +101,39 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
 
             loss_basic = (F.cross_entropy(basic_out, basic_targets))
 
+            # Continuous Attribute Loss (Soft Binary Cross-Entropy with Free-Grain adaptation)
+            loss_attr = torch.tensor(0.0, device=device)
+            if attr_out is not None and getattr(args, 'attr_loss_weight', 0.0) > 0 and getattr(args, 'class_attrs', None) is not None:
+                class_attrs = args.class_attrs
+                mode = getattr(args, 'attr_freegrain_mode', 'masked')
+
+                if mode == 'masked':
+                    # Masked mode: Only supervise samples that have fine-grained species labels (leaf_labels)
+                    if leaf_labels.shape[0] > 0:
+                        sel_idx = leaf_labels.squeeze()
+                        if sel_idx.dim() == 0:
+                            sel_idx = sel_idx.unsqueeze(0)
+                        sel_attr_output = torch.index_select(attr_out, 0, sel_idx)
+                        sel_fine_labels = torch.index_select(fine_targets, 0, sel_idx)
+                        target_attrs = class_attrs[sel_fine_labels]
+                        loss_attr = F.binary_cross_entropy_with_logits(sel_attr_output, target_attrs)
+                elif mode == 'hierarchical_mean':
+                    # Hierarchical Mean mode: Aggregate attribute prototypes across taxonomy
+                    family_attrs = getattr(args, 'family_attrs', None)
+                    order_attrs = getattr(args, 'order_attrs', None)
+                    batch_target_attrs = torch.zeros(samples.shape[0], class_attrs.shape[1], device=device)
+                    for idx_b in range(samples.shape[0]):
+                        t_val = targets[idx_b].item()
+                        if t_val > 50:  # fine-grained species known
+                            batch_target_attrs[idx_b] = class_attrs[fine_targets[idx_b]]
+                        elif t_val > 12:  # subordinate family known
+                            batch_target_attrs[idx_b] = family_attrs[sub_targets[idx_b]] if family_attrs is not None else class_attrs[fine_targets[idx_b]]
+                        else:  # basic order known
+                            batch_target_attrs[idx_b] = order_attrs[basic_targets[idx_b]] if order_attrs is not None else class_attrs[fine_targets[idx_b]]
+                    loss_attr = F.binary_cross_entropy_with_logits(attr_out, batch_target_attrs)
+
                 
-        loss = loss_fine + loss_sub + loss_basic + sim_loss * args.sim_loss_weight 
+        loss = loss_fine + loss_sub + loss_basic + sim_loss * args.sim_loss_weight + loss_attr * getattr(args, 'attr_loss_weight', 0.0) 
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):
@@ -123,6 +155,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         metric_logger.update(subord_loss=loss_sub.item())
         metric_logger.update(basic_loss=loss_basic.item())
         metric_logger.update(sim_loss=sim_loss.item())
+        if getattr(args, 'attr_loss_weight', 0.0) > 0:
+            metric_logger.update(attr_loss=loss_attr.item())
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
         del feats, caps_embed, loss_i, loss_t, sim_loss, logits

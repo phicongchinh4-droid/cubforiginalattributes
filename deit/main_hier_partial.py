@@ -157,6 +157,20 @@ def get_args_parser():
     # * Finetuning params
     parser.add_argument('--finetune', default='', help='finetune from checkpoint')
     parser.add_argument('--attn-only', action='store_true') 
+
+    # * Continuous Attribute Loss params (CUB-200-2011 attributes)
+    parser.add_argument('--attr-path', default='', type=str,
+                        help='Path to class_attribute_labels_continuous.txt')
+    parser.add_argument('--num-attributes', default=312, type=int,
+                        help='Number of continuous attributes (default: 312 for CUB)')
+    parser.add_argument('--attr-loss-weight', default=0.0, type=float,
+                        help='Weight lambda for continuous attribute soft BCE loss (default: 0.0, disabled)')
+    parser.add_argument('--attr-freegrain-mode', default='masked', choices=['masked', 'hierarchical_mean'],
+                        help='Free-grain adaptation mode: masked (only fine-grained) or hierarchical_mean (prototype average)')
+    parser.add_argument('--freeze-backbone', action='store_true',
+                        help='Freeze transformer backbone (patch_embed, pos_embed, blocks) and train only classification heads + attr_head')
+    parser.add_argument('--freeze-all-except-attr', action='store_true',
+                        help='Freeze entire model except attr_head for isolated attribute head tuning') 
     
     # Dataset parameters
     parser.add_argument('--data-path', default='/datasets01/imagenet_full_size/061417/', type=str,
@@ -297,7 +311,8 @@ def main(args):
         drop_block_rate=None,
         img_size=args.input_size,
         nb_classes=args.nb_classes,
-        texts=args.texts
+        texts=args.texts,
+        num_attributes=args.num_attributes if (args.attr_loss_weight > 0 or args.attr_path) else 0
     )
     print(model)
                     
@@ -358,8 +373,76 @@ def main(args):
                 p.requires_grad = False
         except:
             print('no patch embed')
+
+    # Freezing options for easy comparison and fine-tuning
+    if args.freeze_all_except_attr:
+        print("[Freeze] Freezing all model parameters except 'attr_head'...")
+        for name_p, p in model.named_parameters():
+            if 'attr_head' in name_p:
+                p.requires_grad = True
+            else:
+                p.requires_grad = False
+    elif args.freeze_backbone:
+        print("[Freeze] Freezing transformer backbone (blocks, patch_embed, pos_embed), training classification heads and attr_head...")
+        for name_p, p in model.named_parameters():
+            if 'head' in name_p or 'feats_layer' in name_p:
+                p.requires_grad = True
+            else:
+                p.requires_grad = False
             
     model.to(device)
+
+    # Load continuous attributes if attribute loss is enabled
+    args.class_attrs = None
+    args.family_attrs = None
+    args.order_attrs = None
+    if args.attr_loss_weight > 0:
+        attr_file = args.attr_path
+        if not attr_file and 'BIRD' in args.data_set:
+            candidates = [
+                os.path.join(args.data_path, '../attributes/class_attribute_labels_continuous.txt'),
+                os.path.join(args.data_path, 'attributes/class_attribute_labels_continuous.txt'),
+                'data/CUB_200_2011/attributes/class_attribute_labels_continuous.txt',
+                './CUB_200_2011/attributes/class_attribute_labels_continuous.txt',
+            ]
+            for c in candidates:
+                if os.path.exists(c):
+                    attr_file = c
+                    break
+        if attr_file and os.path.exists(attr_file):
+            print(f"[Attribute Head] Loading continuous attributes from: {attr_file}")
+            raw_attrs = np.loadtxt(attr_file, dtype=np.float32) / 100.0  # normalize to [0, 1]
+            args.class_attrs = torch.from_numpy(raw_attrs).to(device)
+            print(f"[Attribute Head] Loaded {args.class_attrs.shape[0]} classes x {args.class_attrs.shape[1]} continuous attributes (normalized to [0, 1]).")
+
+            # Precalculate family and order average prototypes if hierarchical_mean mode is selected
+            if args.attr_freegrain_mode == 'hierarchical_mean' and 'BIRD' in args.data_set:
+                try:
+                    import sys
+                    if 'data' not in sys.path:
+                        sys.path.append('data')
+                    from birds_get_tree_target_2 import trees
+                    num_families = args.nb_classes[1]
+                    num_orders = args.nb_classes[2] if len(args.nb_classes) == 3 else 13
+                    fam_attrs = torch.zeros(num_families, args.class_attrs.shape[1], device=device)
+                    ord_attrs = torch.zeros(num_orders, args.class_attrs.shape[1], device=device)
+                    fam_cnt = torch.zeros(num_families, device=device)
+                    ord_cnt = torch.zeros(num_orders, device=device)
+                    for row in trees:
+                        sp_i = row[0] - 1
+                        ord_i = row[1] - 1
+                        fam_i = row[2] - 1
+                        fam_attrs[fam_i] += args.class_attrs[sp_i]
+                        fam_cnt[fam_i] += 1
+                        ord_attrs[ord_i] += args.class_attrs[sp_i]
+                        ord_cnt[ord_i] += 1
+                    args.family_attrs = fam_attrs / fam_cnt.unsqueeze(1).clamp(min=1)
+                    args.order_attrs = ord_attrs / ord_cnt.unsqueeze(1).clamp(min=1)
+                    print(f"[Attribute Head] Precomputed {num_families} family and {num_orders} order attribute prototypes for free-grain adaptation.")
+                except Exception as e:
+                    print(f"[Attribute Head] Warning: Could not precalculate hierarchical mean prototypes: {e}")
+        else:
+            raise FileNotFoundError(f"[Attribute Head] Error: Continuous attribute file not found at '{args.attr_path}'. Please specify a valid --attr-path.")
 
     model_ema = None
     if args.model_ema:

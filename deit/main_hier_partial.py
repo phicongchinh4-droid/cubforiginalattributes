@@ -302,6 +302,20 @@ def main(args):
 
     print(f"Creating model: {args.model}")
 
+    # Auto-detect if checkpoint to resume from has attr_head
+    has_attr_in_checkpoint = False
+    if args.resume and os.path.exists(args.resume) and not args.resume.startswith('https'):
+        try:
+            ckpt_peek = torch.load(args.resume, map_location='cpu')
+            if 'model' in ckpt_peek and 'attr_head.weight' in ckpt_peek['model']:
+                has_attr_in_checkpoint = True
+                args.num_attributes = ckpt_peek['model']['attr_head.weight'].shape[0]
+                print(f"[Model Init] Auto-detected attr_head in resume checkpoint ({args.num_attributes} attributes).")
+        except Exception:
+            pass
+
+    use_attr = (args.attr_loss_weight > 0 or bool(args.attr_path) or has_attr_in_checkpoint)
+
     model = create_model(
         args.model,
         pretrained=args.pretrained,
@@ -312,7 +326,7 @@ def main(args):
         img_size=args.input_size,
         nb_classes=args.nb_classes,
         texts=args.texts,
-        num_attributes=args.num_attributes if (args.attr_loss_weight > 0 or args.attr_path) else 0
+        num_attributes=args.num_attributes if use_attr else 0
     )
     print(model)
                     
@@ -512,7 +526,7 @@ def main(args):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
+        model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
